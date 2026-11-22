@@ -1,0 +1,52 @@
+# Base configuration for Open-World Remote Sensing Detector (Anveshak)
+# Note: STRICT NO-PRETRAINED-WEIGHTS. Models are initialized with random weights.
+
+system:
+  seed: 42
+  num_workers: 4
+  device: "cuda"
+
+data:
+  image_size: 512       # Standard remote sensing tile dimension
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  data_dir: "data"      # Local directory (on Colab, symlinked or copied to /content/data)
+  drive_sync_dir: "/content/drive/MyDrive/Anveshak"
+
+model:
+  name: "OW_Detector"
+  backbone: "resnet34_gn" # GroupNorm backbone for robust training from scratch
+  pretrained: False       # STRICTLY False per competition rules
+  num_classes: 40         # Round 1 total classes (Set A + Set B)
+  unknown_class_id: -1    # Designated identifier for unknown class
+  energy_temperature: 1.0 # Temperature T for Helmholtz Free Energy scoring
+  unknown_threshold: 0.45 # Energy / objectness threshold for unknown classification
+
+training_set_a:
+  batch_size: 16
+  epochs: 40
+  warmup_epochs: 5
+  base_lr: 0.001
+  min_lr: 0.00001
+  weight_decay: 0.0001
+  momentum: 0.9
+  optimizer: "SGD"        # or AdamW with warmup
+  lr_scheduler: "cosine"
+  save_interval: 5
+  checkpoint_path: "checkpoints/set_a_best.pth"
+
+continual_set_b:
+  batch_size: 8
+  epochs: 15
+  base_lr: 0.0001
+  distillation_weight: 0.5 # Knowledge distillation penalty to prevent catastrophic forgetting
+  cosine_margin: 0.35      # Cosine similarity margin for prototype separation
+  checkpoint_in: "checkpoints/set_a_best.pth"
+  checkpoint_out: "checkpoints/round1_final.pth"
+
+inference:
+  iou_threshold: 0.5       # Matching IoU as specified in evaluation rules
+  conflict_iou: 0.5        # If known and unknown overlap >= 0.5, higher score wins
+  max_detections_per_image: 1000
+  score_threshold: 0.20
+  unknown_score_threshold: 0.35
