@@ -8,6 +8,13 @@ Key aspects:
 """
 
 import os
+import sys
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import argparse
 import yaml
 import torch
@@ -17,6 +24,7 @@ from tqdm import tqdm
 
 from src.models.detector import build_scratch_detector
 from src.data.dataset import RemoteSensingDataset
+from src.utils.paths import auto_detect_dataset_paths
 
 
 def collate_fn(batch):
@@ -51,26 +59,25 @@ def train_set_a(
     epochs = cfg['training_set_a']['epochs']
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=cfg['training_set_a']['min_lr'])
 
-    # Setup dummy/real dataset loader
-    set_a_images = os.path.join(data_dir, "dataset_a", "images")
-    set_a_annos = os.path.join(data_dir, "dataset_a", "annotations.csv")
+    # Setup dataset loader with auto-path resolution
+    paths = auto_detect_dataset_paths(data_dir)
+    set_a_images = paths["set_a_images"]
+    set_a_annos = paths["set_a_annos"]
 
-    if os.path.exists(set_a_images):
+    if set_a_images and os.path.exists(set_a_images):
         dataset = RemoteSensingDataset(image_dir=set_a_images, annotations_file=set_a_annos)
         dataloader = DataLoader(dataset, batch_size=cfg['training_set_a']['batch_size'], shuffle=True, collate_fn=collate_fn)
         print(f"[✓] Loaded {len(dataset)} training samples for Set A.")
     else:
-        print(f"[!] Warning: Data path '{set_a_images}' not found yet. Ready for data ingestion.")
+        print(f"[!] Warning: Data path '{set_a_images}' not found. Check extracted dataset structure.")
         dataloader = []
 
     best_loss = float('inf')
     save_path = os.path.join(output_dir, "set_a_best.pth")
 
     print("[*] Ready to train Set A.")
-    # Training Loop outline (executed when data is mounted)
     for epoch in range(1, epochs + 1):
         if not dataloader:
-            # Save initialized weights as checkpoint template if dry running
             torch.save({"model_state_dict": model.state_dict(), "epoch": 0}, save_path)
             print(f"[✓] Initial model checkpoint saved to {save_path}")
             break

@@ -7,6 +7,13 @@ Enforces:
 """
 
 import os
+import sys
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import argparse
 import yaml
 import torch
@@ -17,6 +24,7 @@ from tqdm import tqdm
 
 from src.models.detector import build_scratch_detector
 from src.data.dataset import RemoteSensingDataset
+from src.utils.paths import auto_detect_dataset_paths
 
 
 def collate_fn(batch):
@@ -63,15 +71,16 @@ def train_set_b(
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=0.0001)
     epochs = cfg['continual_set_b']['epochs']
 
-    set_b_images = os.path.join(data_dir, "dataset_b", "images")
-    set_b_annos = os.path.join(data_dir, "dataset_b", "annotations.csv")
+    paths = auto_detect_dataset_paths(data_dir)
+    set_b_images = paths["set_b_images"]
+    set_b_annos = paths["set_b_annos"]
 
-    if os.path.exists(set_b_images):
+    if set_b_images and os.path.exists(set_b_images):
         dataset = RemoteSensingDataset(image_dir=set_b_images, annotations_file=set_b_annos)
         dataloader = DataLoader(dataset, batch_size=cfg['continual_set_b']['batch_size'], shuffle=True, collate_fn=collate_fn)
         print(f"[✓] Loaded {len(dataset)} few-shot samples for Set B.")
     else:
-        print(f"[!] Warning: Data path '{set_b_images}' not found yet.")
+        print(f"[!] Warning: Data path '{set_b_images}' not found.")
         dataloader = []
 
     os.makedirs(os.path.dirname(output_checkpoint) or ".", exist_ok=True)

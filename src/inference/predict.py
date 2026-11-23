@@ -5,6 +5,13 @@ applies the official IoU 0.5 Conflict Rule, and exports validate_predictions-com
 """
 
 import os
+import sys
+
+# Ensure project root is in sys.path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import argparse
 import torch
 import pandas as pd
@@ -15,6 +22,7 @@ import yaml
 from src.models.detector import build_scratch_detector, FreeEnergyScorer
 from src.data.dataset import RemoteSensingDataset
 from src.inference.conflict_resolver import clean_and_format_predictions, save_submission_csv
+from src.utils.paths import auto_detect_dataset_paths
 
 
 def run_inference(
@@ -49,11 +57,17 @@ def run_inference(
     model.to(device)
     model.eval()
 
+    # If test_images_dir doesn't exist, search for it
+    if not os.path.exists(test_images_dir):
+        paths = auto_detect_dataset_paths("data")
+        if paths["test_images"]:
+            test_images_dir = paths["test_images"]
+
     # Load dataset
     dataset = RemoteSensingDataset(image_dir=test_images_dir, target_size=cfg['data']['image_size'])
     records = []
 
-    print(f"[*] Inferring on {len(dataset)} test images...")
+    print(f"[*] Inferring on {len(dataset)} test images from: {test_images_dir}...")
     with torch.no_grad():
         for i in tqdm(range(len(dataset))):
             image, meta = dataset[i]
