@@ -11,8 +11,9 @@ env/
 ENV/
 
 # Data & Storage (Store in Google Drive, never commit to git)
-data/
-datasets/
+/data/
+/datasets/
+!src/data/
 *.zip
 *.tar
 *.tar.gz
