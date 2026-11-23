@@ -74,7 +74,8 @@ def run_inference(
             img_id = meta['image_id']
             image_batch = [image.to(device)]
 
-            outputs = model(image_batch)[0]
+            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+                outputs = model(image_batch)[0]
 
             boxes = outputs['boxes'].cpu().numpy()
             scores = outputs['scores'].cpu().numpy()

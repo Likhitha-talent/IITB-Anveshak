@@ -3,13 +3,13 @@ Continual Learning Script for Set B (10 Few-Shot Classes).
 Enforces:
   - Exact model continuity (starts from verified Set A checkpoint)
   - Knowledge Distillation loss from Set A features/outputs to prevent catastrophic forgetting
+  - AMP (FP16) to prevent CUDA OOM
   - Continual update saved to `checkpoints/round1_final.pth`
 """
 
 import os
 import sys
 
-# Ensure project root is in sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -43,9 +43,11 @@ def train_set_b(
     device = torch.device(cfg['system']['device'] if torch.cuda.is_available() else 'cpu')
     print(f"[*] Continual training on device: {device}")
 
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     num_classes = cfg['model']['num_classes']
 
-    # 1. Initialize active model
     model = build_scratch_detector(num_classes=num_classes, pretrained=False)
     if os.path.exists(checkpoint_in):
         checkpoint = torch.load(checkpoint_in, map_location=device)
@@ -57,7 +59,7 @@ def train_set_b(
 
     model.to(device)
 
-    # 2. Frozen teacher model for Knowledge Distillation (preventing forgetting)
+    # Teacher model for distillation
     teacher_model = build_scratch_detector(num_classes=num_classes, pretrained=False)
     if os.path.exists(checkpoint_in):
         teacher_model.load_state_dict(state_dict)
@@ -66,8 +68,11 @@ def train_set_b(
     for param in teacher_model.parameters():
         param.requires_grad = False
 
-    # Lower learning rate for fine-tuning
-    lr = cfg['continual_set_b']['base_lr']
+    use_amp = cfg['continual_set_b'].get('mixed_precision', True) and torch.cuda.is_available()
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    accum_steps = cfg['continual_set_b'].get('gradient_accumulation_steps', 2)
+
+    lr = float(cfg['continual_set_b']['base_lr'])
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=0.0001)
     epochs = cfg['continual_set_b']['epochs']
 
@@ -75,9 +80,17 @@ def train_set_b(
     set_b_images = paths["set_b_images"]
     set_b_annos = paths["set_b_annos"]
 
+    batch_size = cfg['continual_set_b']['batch_size']
     if set_b_images and os.path.exists(set_b_images):
-        dataset = RemoteSensingDataset(image_dir=set_b_images, annotations_file=set_b_annos)
-        dataloader = DataLoader(dataset, batch_size=cfg['continual_set_b']['batch_size'], shuffle=True, collate_fn=collate_fn)
+        dataset = RemoteSensingDataset(image_dir=set_b_images, annotations_file=set_b_annos, target_size=cfg['data']['image_size'])
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=cfg['system'].get('num_workers', 2),
+            collate_fn=collate_fn,
+            pin_memory=torch.cuda.is_available()
+        )
         print(f"[✓] Loaded {len(dataset)} few-shot samples for Set B.")
     else:
         print(f"[!] Warning: Data path '{set_b_images}' not found.")
@@ -93,32 +106,38 @@ def train_set_b(
             break
 
         model.train()
+        optimizer.zero_grad()
         pbar = tqdm(dataloader, desc=f"Set B Epoch {epoch}/{epochs}")
 
-        for images, targets in pbar:
+        for step, (images, targets) in enumerate(pbar):
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
-            # Primary detection loss
-            loss_dict = model(images, targets)
-            det_loss = sum(loss for loss in loss_dict.values())
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                loss_dict = model(images, targets)
+                det_loss = sum(loss for loss in loss_dict.values())
 
-            # Knowledge distillation loss (MSE on FPN features to preserve representations)
-            with torch.no_grad():
-                teacher_features = teacher_model.backbone(torch.stack(images))
-            student_features = model.backbone(torch.stack(images))
+                # Distillation loss
+                with torch.no_grad():
+                    teacher_features = teacher_model.backbone(torch.stack(images))
+                student_features = model.backbone(torch.stack(images))
 
-            kd_loss = 0.0
-            for k in student_features.keys():
-                kd_loss += nn.functional.mse_loss(student_features[k], teacher_features[k])
+                kd_loss = 0.0
+                for k in student_features.keys():
+                    kd_loss += nn.functional.mse_loss(student_features[k], teacher_features[k])
 
-            total_loss = det_loss + (cfg['continual_set_b']['distillation_weight'] * kd_loss)
+                total_loss = det_loss + (float(cfg['continual_set_b']['distillation_weight']) * kd_loss)
+                loss = total_loss / accum_steps
 
-            optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
 
-            pbar.set_postfix(det_loss=det_loss.item(), kd_loss=kd_loss.item())
+            if (step + 1) % accum_steps == 0 or (step + 1) == len(dataloader):
+                scaler.unscale_(optimizer)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+
+            pbar.set_postfix(det=round(det_loss.item(), 4), kd=round(kd_loss.item(), 4))
 
         torch.save({"model_state_dict": model.state_dict(), "epoch": epoch}, output_checkpoint)
 
