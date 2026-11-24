@@ -1,7 +1,7 @@
 """
 Path discovery and dataset locator utility for Anveshak.
-Auto-detects nested dataset folders and prioritizes true annotation files (annotations.csv, labels.csv)
-over metadata files (tiles.csv).
+Auto-detects nested dataset folders, labels/ directories with per-image files,
+and monolithic annotation files.
 """
 
 import os
@@ -10,11 +10,9 @@ from typing import Dict, Optional, List
 
 
 def is_annotation_file(filepath: str) -> bool:
-    """Checks if a CSV/JSON file contains bounding box coordinates."""
     if not os.path.isfile(filepath):
         return False
     fl = os.path.basename(filepath).lower()
-    # High-confidence naming
     if any(k in fl for k in ["annot", "label", "bbox", "box", "gt", "target", "train"]):
         return True
     if filepath.endswith('.csv'):
@@ -28,31 +26,35 @@ def is_annotation_file(filepath: str) -> bool:
     return False
 
 
-def find_annotation_file(dpath: str) -> Optional[str]:
-    """Finds the true annotation file inside a dataset directory."""
+def find_annotation_path(dpath: str) -> Optional[str]:
+    # 1. Check for labels/ or annotations/ directory with individual files
+    for cand in ["labels", "annotations", "annos"]:
+        cand_dir = os.path.join(dpath, cand)
+        if os.path.isdir(cand_dir):
+            return cand_dir
+
     all_files = []
     for root, _, files in os.walk(dpath):
         for f in files:
             if not f.startswith("."):
                 all_files.append(os.path.join(root, f))
 
-    # 1. Prioritize files named with 'annot', 'label', 'bbox', 'train'
+    # 2. Prioritize files named with 'annot', 'label', 'bbox', 'train'
     annot_candidates = [f for f in all_files if any(k in os.path.basename(f).lower() for k in ["annot", "label", "bbox", "target", "train"]) and f.endswith(('.csv', '.json', '.xml', '.txt'))]
     if annot_candidates:
         return annot_candidates[0]
 
-    # 2. Check all CSVs to see which one has bounding box coordinates
+    # 3. Check CSVs for bounding box coordinates
     csv_candidates = [f for f in all_files if f.endswith('.csv')]
     for c in csv_candidates:
         if is_annotation_file(c):
             return c
 
-    # 3. Fallback to any JSON or XML
+    # 4. Fallback to any JSON or XML
     for f in all_files:
         if f.endswith(('.json', '.xml')):
             return f
 
-    # 4. Fallback to any CSV if nothing else
     if csv_candidates:
         return csv_candidates[0]
 
@@ -84,12 +86,12 @@ def auto_detect_dataset_paths(base_dir: str) -> Dict[str, Optional[str]]:
             if "dataset_a" in dl or "dataset a" in dl or dl == "dataset_a":
                 sub_img = os.path.join(dpath, "images")
                 resolved["set_a_images"] = sub_img if os.path.exists(sub_img) else dpath
-                resolved["set_a_annos"] = find_annotation_file(dpath)
+                resolved["set_a_annos"] = find_annotation_path(dpath)
 
             elif "dataset_b" in dl or "dataset_b" in dl or dl == "dataset_b":
                 sub_img = os.path.join(dpath, "images")
                 resolved["set_b_images"] = sub_img if os.path.exists(sub_img) else dpath
-                resolved["set_b_annos"] = find_annotation_file(dpath)
+                resolved["set_b_annos"] = find_annotation_path(dpath)
 
             elif "test" in dl:
                 sub_img = os.path.join(dpath, "images")

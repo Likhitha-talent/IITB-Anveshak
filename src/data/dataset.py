@@ -1,7 +1,8 @@
 """
 Dataset loader and preprocessors for Anveshak Remote Sensing Imagery.
 Supports arbitrary resolution tiles, bounding box normalization, and data augmentations.
-Handles multiple annotation formats and dynamically maps any column naming conventions.
+Handles individual per-image JSON files in labels/ directories (Labelme, Roboflow, VOC, etc.),
+COCO JSON, XML files, and CSV files.
 """
 
 import os
@@ -46,10 +47,53 @@ class RemoteSensingDataset(Dataset):
         self.annotations = {}  # img_id -> list of (box, class_idx)
         self._load_annotations(annotations_file)
 
+    def _parse_single_json(self, data, img_id: str):
+        """Parses an individual JSON file for a single image."""
+        boxes = []
+        # Format 1: Labelme format ("shapes": [{"label": ..., "points": [[x1, y1], [x2, y2]]}])
+        if isinstance(data, dict) and "shapes" in data:
+            for s in data["shapes"]:
+                cls_name = str(s.get("label", "object"))
+                cls_idx = self.class_to_idx.setdefault(cls_name, len(self.class_to_idx) + 1)
+                pts = np.array(s.get("points", []))
+                if len(pts) >= 2:
+                    xmin, ymin = pts.min(axis=0)[:2]
+                    xmax, ymax = pts.max(axis=0)[:2]
+                    boxes.append(([float(xmin), float(ymin), float(xmax), float(ymax)], cls_idx))
+
+        # Format 2: Objects/annotations list in dict
+        elif isinstance(data, dict) and any(k in data for k in ["objects", "annotations", "labels", "bboxes", "targets"]):
+            items = data.get("objects", data.get("annotations", data.get("labels", data.get("bboxes", []))))
+            for item in items:
+                cls_name = str(item.get("category", item.get("class", item.get("label", item.get("name", "object")))))
+                cls_idx = self.class_to_idx.setdefault(cls_name, len(self.class_to_idx) + 1)
+                b = item.get("bbox", item.get("box", item.get("coordinates", [])))
+                if len(b) == 4:
+                    # Check if [x, y, w, h] or [xmin, ymin, xmax, ymax]
+                    if b[2] < b[0] or b[3] < b[1]:
+                        # Likely [x, y, w, h]
+                        b = [b[0], b[1], b[0] + b[2], b[1] + b[3]]
+                    boxes.append(([float(b[0]), float(b[1]), float(b[2]), float(b[3])], cls_idx))
+
+        # Format 3: Direct list of dicts
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    cls_name = str(item.get("category", item.get("class", item.get("label", item.get("name", "object")))))
+                    cls_idx = self.class_to_idx.setdefault(cls_name, len(self.class_to_idx) + 1)
+                    b = item.get("bbox", item.get("box", []))
+                    if len(b) == 4:
+                        if b[2] < b[0] or b[3] < b[1]:
+                            b = [b[0], b[1], b[0] + b[2], b[1] + b[3]]
+                        boxes.append(([float(b[0]), float(b[1]), float(b[2]), float(b[3])], cls_idx))
+
+        if boxes:
+            self.annotations[img_id] = boxes
+
     def _load_annotations(self, annos_path: Optional[str]):
         if not annos_path:
             parent = os.path.dirname(self.image_dir)
-            for cand in ["annotations", "labels", "annos"]:
+            for cand in ["labels", "annotations", "annos"]:
                 cpath = os.path.join(parent, cand)
                 if os.path.exists(cpath):
                     annos_path = cpath
@@ -60,91 +104,35 @@ class RemoteSensingDataset(Dataset):
 
         print(f"[*] Parsing annotations from: {annos_path}")
 
-        if os.path.isfile(annos_path):
-            if annos_path.endswith('.csv'):
-                try:
-                    df = pd.read_csv(annos_path)
-                    cols = {c.lower(): c for c in df.columns}
-                    print(f"    Available columns: {list(df.columns)}")
+        # Check if annos_path is a directory or points to a file in a labels/ directory
+        labels_dir = None
+        if os.path.isdir(annos_path):
+            labels_dir = annos_path
+        elif os.path.isfile(annos_path):
+            parent_dir = os.path.dirname(annos_path)
+            if os.path.basename(parent_dir).lower() in ["labels", "annotations"]:
+                labels_dir = parent_dir
 
-                    # Determine image ID column
-                    id_candidates = ['image_id', 'tile_id', 'tile_name', 'image', 'img', 'filename', 'file_name', 'name', 'id', 'file']
-                    id_col = None
-                    for cand in id_candidates:
-                        if cand in cols:
-                            id_col = cols[cand]
-                            break
-                    if not id_col:
-                        id_col = df.columns[0]
-                    print(f"    Using ID column: '{id_col}'")
+        # Case 1: Directory with per-image JSON/XML/TXT files
+        if labels_dir:
+            json_files = glob.glob(os.path.join(labels_dir, "*.json"))
+            if json_files:
+                print(f"[*] Found {len(json_files)} individual JSON label files in {labels_dir}. Parsing...")
+                for jf in json_files:
+                    img_id = os.path.splitext(os.path.basename(jf))[0]
+                    try:
+                        with open(jf, 'r') as f:
+                            data = json.load(f)
+                        self._parse_single_json(data, img_id)
+                    except Exception:
+                        pass
+                print(f"[✓] Parsed annotations for {len(self.annotations)} images. Classes: {len(self.class_to_idx)}")
+                if self.annotations:
+                    return
 
-                    # Determine class/label column
-                    cls_candidates = ['class_name', 'class', 'label', 'category', 'category_id', 'class_id', 'cat', 'type']
-                    cls_col = None
-                    for cand in cls_candidates:
-                        if cand in cols:
-                            cls_col = cols[cand]
-                            break
-
-                    # Determine bounding box coordinate columns
-                    xmin_col = cols.get('xmin', cols.get('x_min', cols.get('minx', cols.get('x1', cols.get('left')))))
-                    ymin_col = cols.get('ymin', cols.get('y_min', cols.get('miny', cols.get('y1', cols.get('top')))))
-                    xmax_col = cols.get('xmax', cols.get('x_max', cols.get('maxx', cols.get('x2', cols.get('right')))))
-                    ymax_col = cols.get('ymax', cols.get('y_max', cols.get('maxy', cols.get('y2', cols.get('bottom')))))
-
-                    # Check for x, y, w, h
-                    w_col = cols.get('width', cols.get('w'))
-                    h_col = cols.get('height', cols.get('h'))
-                    x_col = cols.get('x')
-                    y_col = cols.get('y')
-
-                    for _, row in df.iterrows():
-                        val = row[id_col]
-                        if pd.isna(val):
-                            continue
-                        img_id = os.path.splitext(str(val))[0]
-
-                        # Class label
-                        if cls_col and not pd.isna(row[cls_col]):
-                            cls_name = str(row[cls_col])
-                        else:
-                            cls_name = "known_object"
-                        cls_idx = self.class_to_idx.setdefault(cls_name, len(self.class_to_idx) + 1)
-
-                        # Bounding box
-                        if xmin_col and ymin_col and xmax_col and ymax_col:
-                            b = [float(row[xmin_col]), float(row[ymin_col]), float(row[xmax_col]), float(row[ymax_col])]
-                            self.annotations.setdefault(img_id, []).append((b, cls_idx))
-                        elif x_col and y_col and w_col and h_col:
-                            x, y, w, h = float(row[x_col]), float(row[y_col]), float(row[w_col]), float(row[h_col])
-                            b = [x, y, x + w, y + h]
-                            self.annotations.setdefault(img_id, []).append((b, cls_idx))
-
-                    print(f"[✓] Loaded annotations for {len(self.annotations)} images. Classes detected: {len(self.class_to_idx)}")
-
-                except Exception as e:
-                    print(f"[!] Error parsing CSV {annos_path}: {e}")
-
-            elif annos_path.endswith('.json'):
-                try:
-                    with open(annos_path, 'r') as f:
-                        data = json.load(f)
-                    if 'annotations' in data and 'images' in data:
-                        id_to_fname = {img['id']: os.path.splitext(img['file_name'])[0] for img in data['images']}
-                        for ann in data['annotations']:
-                            fname = id_to_fname.get(ann['image_id'])
-                            if fname:
-                                x, y, w, h = ann['bbox']
-                                box = [x, y, x + w, y + h]
-                                cls_idx = ann.get('category_id', 1)
-                                self.annotations.setdefault(fname, []).append((box, cls_idx))
-                    print(f"[✓] Loaded COCO JSON annotations for {len(self.annotations)} images.")
-                except Exception as e:
-                    print(f"[!] Error parsing JSON {annos_path}: {e}")
-
-        elif os.path.isdir(annos_path):
-            xml_files = glob.glob(os.path.join(annos_path, "*.xml"))
+            xml_files = glob.glob(os.path.join(labels_dir, "*.xml"))
             if xml_files:
+                print(f"[*] Found {len(xml_files)} XML label files in {labels_dir}. Parsing...")
                 for xml_file in xml_files:
                     img_id = os.path.splitext(os.path.basename(xml_file))[0]
                     tree = ET.parse(xml_file)
@@ -160,7 +148,53 @@ class RemoteSensingDataset(Dataset):
                             float(bndbox.find('ymax').text)
                         ]
                         self.annotations.setdefault(img_id, []).append((b, cls_idx))
-                print(f"[✓] Loaded {len(xml_files)} XML annotations.")
+                print(f"[✓] Parsed annotations for {len(self.annotations)} images.")
+                if self.annotations:
+                    return
+
+        # Case 2: Monolithic CSV file
+        if os.path.isfile(annos_path) and annos_path.endswith('.csv'):
+            try:
+                df = pd.read_csv(annos_path)
+                cols = {c.lower(): c for c in df.columns}
+                print(f"    Available columns: {list(df.columns)}")
+
+                id_candidates = ['image_id', 'tile_id', 'tile_name', 'image', 'img', 'filename', 'file_name', 'name', 'id', 'file']
+                id_col = next((cols[c] for c in id_candidates if c in cols), df.columns[0])
+
+                cls_candidates = ['class_name', 'class', 'label', 'category', 'category_id', 'class_id', 'cat', 'type']
+                cls_col = next((cols[c] for c in cls_candidates if c in cols), None)
+
+                xmin_col = cols.get('xmin', cols.get('x_min', cols.get('minx', cols.get('x1', cols.get('left')))))
+                ymin_col = cols.get('ymin', cols.get('y_min', cols.get('miny', cols.get('y1', cols.get('top')))))
+                xmax_col = cols.get('xmax', cols.get('x_max', cols.get('maxx', cols.get('x2', cols.get('right')))))
+                ymax_col = cols.get('ymax', cols.get('y_max', cols.get('maxy', cols.get('y2', cols.get('bottom')))))
+
+                w_col = cols.get('width', cols.get('w'))
+                h_col = cols.get('height', cols.get('h'))
+                x_col = cols.get('x')
+                y_col = cols.get('y')
+
+                for _, row in df.iterrows():
+                    val = row[id_col]
+                    if pd.isna(val):
+                        continue
+                    img_id = os.path.splitext(str(val))[0]
+
+                    cls_name = str(row[cls_col]) if cls_col and not pd.isna(row[cls_col]) else "known_object"
+                    cls_idx = self.class_to_idx.setdefault(cls_name, len(self.class_to_idx) + 1)
+
+                    if xmin_col and ymin_col and xmax_col and ymax_col:
+                        b = [float(row[xmin_col]), float(row[ymin_col]), float(row[xmax_col]), float(row[ymax_col])]
+                        self.annotations.setdefault(img_id, []).append((b, cls_idx))
+                    elif x_col and y_col and w_col and h_col:
+                        x, y, w, h = float(row[x_col]), float(row[y_col]), float(row[w_col]), float(row[h_col])
+                        b = [x, y, x + w, y + h]
+                        self.annotations.setdefault(img_id, []).append((b, cls_idx))
+
+                print(f"[✓] Loaded annotations for {len(self.annotations)} images from CSV. Classes: {len(self.class_to_idx)}")
+            except Exception as e:
+                print(f"[!] Error parsing CSV {annos_path}: {e}")
 
     def __len__(self) -> int:
         return len(self.image_ids)
@@ -179,7 +213,6 @@ class RemoteSensingDataset(Dataset):
                 sx = self.target_size / orig_w
                 sy = self.target_size / orig_h
                 scaled_b = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
-                # Enforce valid box
                 if scaled_b[2] > scaled_b[0] and scaled_b[3] > scaled_b[1]:
                     boxes.append(scaled_b)
                     labels.append(l)
