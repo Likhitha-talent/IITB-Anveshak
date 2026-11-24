@@ -10,6 +10,9 @@ Enforces:
 import os
 import sys
 
+# Prevent CUDA memory fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -120,29 +123,38 @@ def train_set_b(
             images = [img.to(device) for img in images]
             targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
-            with torch.cuda.amp.autocast(enabled=use_amp):
-                loss_dict = model(images, targets)
-                det_loss = sum(loss for loss in loss_dict.values())
+            try:
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    loss_dict = model(images, targets)
+                    det_loss = sum(loss for loss in loss_dict.values())
 
-                # Distillation loss
-                with torch.no_grad():
-                    teacher_features = teacher_model.backbone(torch.stack(images))
-                student_features = model.backbone(torch.stack(images))
+                    # Distillation loss
+                    with torch.no_grad():
+                        teacher_features = teacher_model.backbone(torch.stack(images))
+                    student_features = model.backbone(torch.stack(images))
 
-                kd_loss = 0.0
-                for k in student_features.keys():
-                    kd_loss += nn.functional.mse_loss(student_features[k], teacher_features[k])
+                    kd_loss = 0.0
+                    for k in student_features.keys():
+                        kd_loss += nn.functional.mse_loss(student_features[k], teacher_features[k])
 
-                total_loss = det_loss + (float(cfg['continual_set_b']['distillation_weight']) * kd_loss)
-                loss = total_loss / accum_steps
+                    total_loss = det_loss + (float(cfg['continual_set_b']['distillation_weight']) * kd_loss)
+                    loss = total_loss / accum_steps
 
-            scaler.scale(loss).backward()
+                scaler.scale(loss).backward()
+            except torch.cuda.OutOfMemoryError:
+                print(f"[!] Warning: CUDA OOM avoided on step {step}. Clearing cache and continuing...")
+                torch.cuda.empty_cache()
+                optimizer.zero_grad()
+                continue
 
             if (step + 1) % accum_steps == 0 or (step + 1) == len(dataloader):
                 scaler.unscale_(optimizer)
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
+
+            if (step + 1) % 50 == 0 and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             pbar.set_postfix(det=round(det_loss.item(), 4), kd=round(kd_loss.item(), 4))
 

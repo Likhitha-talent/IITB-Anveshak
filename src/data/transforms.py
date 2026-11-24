@@ -79,6 +79,14 @@ class RemoteSensingTrainTransform:
             boxes = boxes[valid]
             labels = labels[valid]
 
+            # Dense satellite tile guard: Subsample if tile has excessive boxes (> 300)
+            # Faster R-CNN RPN only samples 256 proposals during training; matching 2000+ GT boxes
+            # against 65,000 FPN anchors creates a multi-gigabyte tensor that triggers CUDA OOM.
+            if len(boxes) > 300:
+                keep_idx = np.random.choice(len(boxes), 300, replace=False)
+                boxes = boxes[keep_idx]
+                labels = labels[keep_idx]
+
         # 6. Tensor conversion & Channel Standardization
         img_np = np.array(image_resized, dtype=np.float32) / 255.0
         img_np = (img_np - self.mean) / self.std

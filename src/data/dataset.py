@@ -225,6 +225,13 @@ class RemoteSensingDataset(Dataset):
             if len(boxes) > 0:
                 boxes[:, [0, 2]] *= sx
                 boxes[:, [1, 3]] *= sy
+                valid = (boxes[:, 2] > boxes[:, 0] + 1) & (boxes[:, 3] > boxes[:, 1] + 1)
+                boxes = boxes[valid]
+                labels = labels[valid]
+                if len(boxes) > 300:
+                    keep_idx = np.random.choice(len(boxes), 300, replace=False)
+                    boxes = boxes[keep_idx]
+                    labels = labels[keep_idx]
             img_np = np.array(image_resized, dtype=np.float32) / 255.0
             image_tensor = torch.from_numpy(img_np.transpose(2, 0, 1)).float()
 

@@ -23,8 +23,8 @@ model:
   unknown_threshold: 0.45 # Energy / objectness threshold for unknown classification
 
 training_set_a:
-  batch_size: 4           # Optimized for 15GB Tesla T4 GPU to avoid CUDA OOM
-  gradient_accumulation_steps: 4 # Effective batch size = 4 * 4 = 16!
+  batch_size: 2           # Optimized to 2 to eliminate CUDA OOM on dense remote sensing tiles
+  gradient_accumulation_steps: 8 # Effective batch size = 2 * 8 = 16!
   mixed_precision: true   # FP16 Automatic Mixed Precision for 2x speed & 50% VRAM saving
   epochs: 30
   warmup_epochs: 3
@@ -38,8 +38,8 @@ training_set_a:
   checkpoint_path: "checkpoints/set_a_best.pth"
 
 continual_set_b:
-  batch_size: 4
-  gradient_accumulation_steps: 2
+  batch_size: 2
+  gradient_accumulation_steps: 4
   mixed_precision: true
   epochs: 15
   base_lr: 0.0001
