@@ -210,19 +210,23 @@ class RemoteSensingDataset(Dataset):
         labels = []
         if img_id in self.annotations:
             for b, l in self.annotations[img_id]:
-                sx = self.target_size / orig_w
-                sy = self.target_size / orig_h
-                scaled_b = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
-                if scaled_b[2] > scaled_b[0] and scaled_b[3] > scaled_b[1]:
-                    boxes.append(scaled_b)
-                    labels.append(l)
+                boxes.append(b)
+                labels.append(l)
 
         boxes = np.array(boxes, dtype=np.float32) if boxes else np.zeros((0, 4), dtype=np.float32)
         labels = np.array(labels, dtype=np.int64) if labels else np.zeros((0,), dtype=np.int64)
 
-        image_resized = image.resize((self.target_size, self.target_size))
-        image_np = np.array(image_resized, dtype=np.float32) / 255.0
-        image_tensor = torch.from_numpy(image_np.transpose(2, 0, 1)).float()
+        if self.transform is not None:
+            image_tensor, boxes, labels = self.transform(image, boxes, labels)
+        else:
+            image_resized = image.resize((self.target_size, self.target_size))
+            sx = self.target_size / orig_w
+            sy = self.target_size / orig_h
+            if len(boxes) > 0:
+                boxes[:, [0, 2]] *= sx
+                boxes[:, [1, 3]] *= sy
+            img_np = np.array(image_resized, dtype=np.float32) / 255.0
+            image_tensor = torch.from_numpy(img_np.transpose(2, 0, 1)).float()
 
         targets = {
             "image_id": img_id,

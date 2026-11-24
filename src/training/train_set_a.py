@@ -25,6 +25,7 @@ from tqdm import tqdm
 
 from src.models.detector import build_scratch_detector
 from src.data.dataset import RemoteSensingDataset
+from src.data.transforms import RemoteSensingTrainTransform
 from src.utils.paths import auto_detect_dataset_paths
 
 
@@ -107,8 +108,14 @@ def train_set_a(
     set_a_annos = paths["set_a_annos"]
 
     batch_size = cfg['training_set_a']['batch_size']
+    train_transform = RemoteSensingTrainTransform(target_size=cfg['data']['image_size'])
     if set_a_images and os.path.exists(set_a_images):
-        dataset = RemoteSensingDataset(image_dir=set_a_images, annotations_file=set_a_annos, target_size=cfg['data']['image_size'])
+        dataset = RemoteSensingDataset(
+            image_dir=set_a_images,
+            annotations_file=set_a_annos,
+            transform=train_transform,
+            target_size=cfg['data']['image_size']
+        )
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,

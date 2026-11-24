@@ -21,6 +21,7 @@ import yaml
 
 from src.models.detector import build_scratch_detector, FreeEnergyScorer
 from src.data.dataset import RemoteSensingDataset
+from src.data.transforms import RemoteSensingValTransform
 from src.inference.conflict_resolver import clean_and_format_predictions, save_submission_csv
 from src.utils.paths import auto_detect_dataset_paths
 
@@ -64,7 +65,8 @@ def run_inference(
             test_images_dir = paths["test_images"]
 
     # Load dataset
-    dataset = RemoteSensingDataset(image_dir=test_images_dir, target_size=cfg['data']['image_size'])
+    val_transform = RemoteSensingValTransform(target_size=cfg['data']['image_size'])
+    dataset = RemoteSensingDataset(image_dir=test_images_dir, transform=val_transform, target_size=cfg['data']['image_size'])
     records = []
 
     print(f"[*] Inferring on {len(dataset)} test images from: {test_images_dir}...")
