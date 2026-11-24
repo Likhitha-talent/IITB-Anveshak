@@ -95,8 +95,10 @@ pip install -r requirements.txt
 ---
 
 ## 📊 Deliverables Checklist for Round 1
-- [ ] `predictions.csv` passing `validate_predictions.py`.
-- [ ] `round1_final.pth` checkpoint reproducing predictions within tolerance.
-- [ ] Modular training & inference code with this README.
+- [x] `predictions.csv` passing official `validate_predictions.py` (`OK: 26 rows, no errors. The file is valid.`).
+- [x] `round1_final.pth` checkpoint reproducing predictions within tolerance (Set A scratch + Set B continual learning).
+- [x] Modular training & inference code with this README.
+- [x] 6-slide methodology presentation (`anveshak_methodology_presentation.pptx`) covering architecture, distillation, and Round 2 plan.
+- [x] Turnkey Kaggle GPU Runner ([`notebooks/anveshak_kaggle_runner.ipynb`](notebooks/anveshak_kaggle_runner.ipynb)) with single-click download packaging.
 - [ ] 5–7 Slide Methodology Presentation PPT.
 - [ ] Single Google Drive link set to *"Anyone with the link can view"*.
