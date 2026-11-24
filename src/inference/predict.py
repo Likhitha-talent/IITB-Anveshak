@@ -31,7 +31,8 @@ def run_inference(
     test_images_dir: str,
     output_csv: str,
     config_path: str = "configs/base_config.yaml",
-    device: str = "cuda"
+    device: str = "cuda",
+    class_list_path: str = "/tmp/data/round1/class_list.csv"
 ):
     if not torch.cuda.is_available() and device == "cuda":
         device = "cpu"
@@ -44,6 +45,27 @@ def run_inference(
     num_classes = cfg['model'].get('num_classes', 40)
     energy_temp = cfg['model'].get('energy_temperature', 1.0)
     unk_thresh = cfg['model'].get('unknown_threshold', 0.45)
+
+    # Load class list mapping
+    class_map = {}
+    candidate_class_files = [
+        class_list_path,
+        "/tmp/data/round1/class_list.csv",
+        "data/round1/class_list.csv",
+        os.path.join(os.path.dirname(test_images_dir), "class_list.csv"),
+        os.path.join(os.path.dirname(os.path.dirname(test_images_dir)), "class_list.csv")
+    ]
+    for cfile in candidate_class_files:
+        if cfile and os.path.exists(cfile):
+            try:
+                df_cls = pd.read_csv(cfile)
+                cid_to_label = dict(zip(df_cls['class_id'], df_cls['label']))
+                for cid, lbl in cid_to_label.items():
+                    class_map[cid + 1] = str(lbl)
+                print(f"[✓] Loaded {len(class_map)} class mappings from: {cfile}")
+                break
+            except Exception as e:
+                print(f"[!] Warning reading class list {cfile}: {e}")
 
     # Build model and load checkpoint
     model = build_scratch_detector(num_classes=num_classes, pretrained=False)
@@ -86,16 +108,22 @@ def run_inference(
             for b, s, l in zip(boxes, scores, labels):
                 if s < cfg['inference']['score_threshold']:
                     continue
+                if l == 0:
+                    continue  # background
 
-                # Default class label
-                class_label = f"class_{l}" if l != 0 else "background"
-                if class_label == "background":
-                    continue
+                score_val = float(s)
+                raw_label = class_map.get(int(l), "unknown")
+
+                # If score is below unknown threshold or label is unknown, flag as unknown
+                if score_val < cfg['inference'].get('unknown_score_threshold', 0.35) or raw_label == "unknown":
+                    class_label = "unknown"
+                else:
+                    class_label = raw_label
 
                 records.append({
                     "image_id": img_id,
                     "class_name": class_label,
-                    "score": float(s),
+                    "score": score_val,
                     "xmin": int(b[0]),
                     "ymin": int(b[1]),
                     "xmax": int(b[2]),
@@ -125,6 +153,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_images_dir", type=str, default="data/test_images")
     parser.add_argument("--output_csv", type=str, default="submission/predictions.csv")
     parser.add_argument("--config", type=str, default="configs/base_config.yaml")
+    parser.add_argument("--class_list", type=str, default="/tmp/data/round1/class_list.csv")
     args = parser.parse_args()
 
-    run_inference(args.checkpoint, args.test_images_dir, args.output_csv, args.config)
+    run_inference(args.checkpoint, args.test_images_dir, args.output_csv, args.config, class_list_path=args.class_list)
